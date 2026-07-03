@@ -62,8 +62,9 @@ Davinci.get()
 // new: warm the in-memory cache ahead of time (e.g. at scene start)
 Davinci.get().setPreload(true).load(url).start();
 
-// new: tune the decoded-texture budget (default 48 MB, mip-aware accounting)
-Davinci.memoryBudget = 64L * 1024 * 1024;
+// optional: raise the decoded-texture cache budget for image-heavy apps.
+// Default is 48 MB; each cached texture is counted with its mip chain (w*h*4 * 4/3).
+Davinci.memoryBudget = 64L * 1024 * 1024; // e.g. bump to 64 MB
 ```
 
 ## What the fork adds over upstream

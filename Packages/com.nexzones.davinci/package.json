@@ -1,0 +1,11 @@
+{
+  "name": "com.nexzones.davinci",
+  "version": "0.9.0",
+  "displayName": "Davinci+ Image Loader",
+  "description": "Maintained drop-in fork of shamsdev/davinci: runtime image loading with a three-tier cache (in-memory LRU decoded textures, disk/IndexedDB/WeChat FS, network) and preload pipeline. WebGL first-class.",
+  "unity": "2021.3",
+  "license": "MIT",
+  "keywords": ["image", "loader", "cache", "davinci", "webgl"],
+  "author": { "name": "zhipeng515", "url": "https://github.com/zhipeng515" },
+  "dependencies": { "com.nexzones.cache-core": "0.9.0" }
+}

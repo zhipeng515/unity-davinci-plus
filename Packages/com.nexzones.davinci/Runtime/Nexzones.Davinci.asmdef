@@ -1,0 +1,5 @@
+{
+  "name": "Nexzones.Davinci",
+  "references": ["Nexzones.Cache.Core"],
+  "autoReferenced": true
+}

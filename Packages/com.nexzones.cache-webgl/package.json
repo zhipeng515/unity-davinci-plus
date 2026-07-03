@@ -1,0 +1,11 @@
+{
+  "name": "com.nexzones.cache-webgl",
+  "version": "0.9.0",
+  "displayName": "Nexzones URL Cache (WebGL + WeChat)",
+  "description": "WebGL backend for com.nexzones.cache-core: unified web file layer over browser IndexedDB and WeChat minigame FS, with an ordered async operation queue.",
+  "unity": "2021.3",
+  "license": "MIT",
+  "keywords": ["cache", "webgl", "indexeddb", "wechat", "minigame"],
+  "author": { "name": "zhipeng515", "url": "https://github.com/zhipeng515" },
+  "dependencies": { "com.nexzones.cache-core": "0.9.0" }
+}

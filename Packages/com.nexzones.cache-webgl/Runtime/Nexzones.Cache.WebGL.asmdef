@@ -1,0 +1,7 @@
+{
+  "name": "Nexzones.Cache.WebGL",
+  "rootNamespace": "Nexzones.Cache",
+  "references": ["Nexzones.Cache.Core"],
+  "autoReferenced": true,
+  "defineConstraints": ["UNITY_WEBGL"]
+}

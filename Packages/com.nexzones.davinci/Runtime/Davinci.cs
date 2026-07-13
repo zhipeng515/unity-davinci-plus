@@ -118,6 +118,10 @@ public class Davinci : MonoBehaviour
     private string uniqueHash;
     private int progress;
 
+    // 下载完成的原始字节;供「按 URL 去重挂靠到本请求」的其它请求同步自解码复用,
+    // 避免它们回头读尚未落盘的异步磁盘缓存(WebGL IDBFS)拿到空 → 图空白的竞态。
+    private byte[] downloadedData;
+
     private bool success = false;
 
     /// <summary>
@@ -466,7 +470,10 @@ public class Davinci : MonoBehaviour
                     if (onDownloadedAction != null)
                         onDownloadedAction.Invoke();
 
-                    loadSpriteToImage();
+                    // 复用主请求下载好的原始字节同步自解码,规避「读尚未落盘的异步缓存拿到空」
+                    // 的间歇竞态(spot 图空白、热区在)。字节为空(主请求出错等)才回退原路径,
+                    // 绝不去 StartCoroutine(Downloader) 重入——那会挂到已 Invoke 完的主请求上卡死。
+                    loadSpriteToImageFromData(sameProcess.downloadedData);
                 };
                 yield break;
             }
@@ -502,7 +509,11 @@ public class Davinci : MonoBehaviour
         }
 
         if (www.error == null) {
-            BaseCacheManager.instance.SaveCache(url, www.downloadHandler.data);
+            var raw = www.downloadHandler.data; // 取一次复用(每次访问可能拷贝)
+            BaseCacheManager.instance.SaveCache(url, raw);
+            // 去重挂靠的请求靠这份原始字节各自同步解码(见上面 Downloader 去重分支),
+            // 必须在下面 onDownloadedAction.Invoke() 触发它们之前就绪。
+            downloadedData = raw;
         }
 
         if (onDownloadedAction != null)
@@ -520,10 +531,22 @@ public class Davinci : MonoBehaviour
 
         www.Dispose();
         www = null;
+        downloadedData = null;
 
         if(BaseCacheManager.GlobalCached) {
             underProcessDavincies.Remove(uniqueHash);
         }
+    }
+
+    // 去重挂靠的请求:用主请求下载好的原始字节自解一张纹理再走正常贴图路径,
+    // 规避读尚未落盘的异步缓存拿到空的竞态。字节为空(主请求出错等)→ 回退到原始
+    // loadSpriteToImage()(读缓存),保持与改动前完全一致的行为,不重入下载、不挂死。
+    private void loadSpriteToImageFromData(byte[] data)
+    {
+        if (data == null || data.Length == 0) { loadSpriteToImage(); return; }
+        var tex = new Texture2D(2, 2);
+        tex.LoadImage(data);
+        loadSpriteToImage(tex);
     }
 
     private void loadSpriteToImage(Texture2D texture = null)

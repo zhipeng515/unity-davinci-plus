@@ -654,8 +654,12 @@ public class Davinci : MonoBehaviour
                     if (image == null)
                         break;
 
+                    // 九宫格必须用 FullRect:Tight 的网格贴着不透明像素走,带 border 的
+                    // 精灵按 Sliced 绘制时四角/四边会被裁错。无 border 的普通图保持
+                    // Tight(少绘制透明区域,原有优化不动)。
                     Sprite sprite = Sprite.Create(texture,
-                        new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.Tight, border);
+                        new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f), 100f, 0,
+                        border == Vector4.zero ? SpriteMeshType.Tight : SpriteMeshType.FullRect, border);
 
                     image.sprite = sprite;
                     InvokeLoadedOnce();
@@ -714,8 +718,10 @@ public class Davinci : MonoBehaviour
                     if (spriteRenderer == null)
                         break;
 
+                    // 同上:带 border 时必须 FullRect,否则九宫格切边不正确
                     Sprite spriteImage = Sprite.Create(texture,
-                        new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.Tight, border);
+                        new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f), 100f, 0,
+                        border == Vector4.zero ? SpriteMeshType.Tight : SpriteMeshType.FullRect, border);
 
                     spriteRenderer.sprite = spriteImage;
                     InvokeLoadedOnce();

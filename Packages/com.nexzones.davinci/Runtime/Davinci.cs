@@ -68,15 +68,42 @@ public class Davinci : MonoBehaviour
     // 公开可配:按项目内存预算调整(估算含 mip 链,×4/3)。
     public static long memoryBudget = 48L * 1024 * 1024;
 
+    /// <summary>
+    /// 解码出来的纹理要不要生成 mipmap。**默认 false。**
+    ///
+    /// 为什么默认关:这个产品是互动影游,画面全是**屏幕空间的 UI 素材** ——
+    /// 按授权尺寸绘制,没有 3D 透视缩小,mip 层根本采不到。留着只有两个后果:
+    ///   ① 每张纹理多占 1/3 显存(mip 链)
+    ///   ② **九宫格会坏**:九段的缩放比例天差地别(四角 1:1、左右中段可能压到
+    ///      0.3 倍),GPU 逐段选 mip → 压得狠的那几段掉到低 mip,而低 mip 是邻域
+    ///      平均的,圆角外的透明像素被混进边缘色 → 按钮/榜单行左右两侧各出现
+    ///      一条「模糊的半透明竖条」(2026-08-05 真机复现;Web 侧逐段 drawImage
+    ///      没有 mip,所以试玩一直是好的,查了很久才落到这里)。
+    ///
+    /// 此前是 true —— 不是需求,是 `new Texture2D(2,2)` 的默认值撞上来的
+    /// (同文件另外两处建纹理都显式传了 false)。
+    ///
+    /// 真要用到 3D / 大幅缩小的场景,再把它打开。
+    /// </summary>
+    public static bool generateMipmaps = false;
+
     private string MemKey()
     {
-        return uniqueHash + (singleChannel ? "|a8" : cursorMode ? "|cur" : "");
+        // 纹理**形态**的差异都要进键 —— 同一个 url 解出两种纹理时,不进键就会
+        // 互相顶掉:拿到的是先缓存的那个,而且 TexBytes 记账也跟着错。
+        // generateMipmaps 同理:它虽是全局开关,但运行时一改,旧格式的缓存还在,
+        // 表现就是"改了没生效"。进了键,改开关自然重新解码。
+        return uniqueHash
+            + (singleChannel ? "|a8" : cursorMode ? "|cur" : "")
+            + (generateMipmaps ? "|mip" : "");
     }
 
     private static long TexBytes(Texture2D t)
     {
-        // Texture2D(2,2)+LoadImage 生成的纹理带完整 mip 链:×4/3
-        return (long)t.width * t.height * 4 * 4 / 3;
+        // 记账要跟着开关走:带 mip 链是 ×4/3,不带就是 w×h×4。
+        // 此前写死 ×4/3,是因为那时 `new Texture2D(2,2)` 默认就带 mip。
+        long bytes = (long)t.width * t.height * 4;
+        return generateMipmaps ? bytes * 4 / 3 : bytes;
     }
 
     private static void MemPut(string key, Texture2D tex)
@@ -541,11 +568,28 @@ public class Davinci : MonoBehaviour
     // 去重挂靠的请求:用主请求下载好的原始字节自解一张纹理再走正常贴图路径,
     // 规避读尚未落盘的异步缓存拿到空的竞态。字节为空(主请求出错等)→ 回退到原始
     // loadSpriteToImage()(读缓存),保持与改动前完全一致的行为,不重入下载、不挂死。
+
+    // 诊断:LoadImage 是**同步**解码,整张 PNG 在主线程上展开,摊不开也打不断。
+    // 2026-08-26 实测:一张 4,955,003 字节的 PNG 之后紧跟着一帧 1846ms 的停顿。
+    // 这里把「多大、多久、解出来多少像素」直接打出来 —— 素材尺寸是创作者可控的,
+    // 但只有先看得见,才谈得上治。
+    private static void LoadImageTimed(Texture2D tex, byte[] data, string url)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        tex.LoadImage(data);
+        sw.Stop();
+        if (sw.ElapsedMilliseconds > 30)
+        {
+            Debug.Log($"[DECODE] {(data == null ? 0 : data.Length)} 字节 → {tex.width}x{tex.height}"
+                + $" 用了 {sw.ElapsedMilliseconds}ms | {url}");
+        }
+    }
+
     private void loadSpriteToImageFromData(byte[] data)
     {
         if (data == null || data.Length == 0) { loadSpriteToImage(); return; }
-        var tex = new Texture2D(2, 2);
-        tex.LoadImage(data);
+        var tex = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
+        LoadImageTimed(tex, data, url);
         loadSpriteToImage(tex);
     }
 
@@ -836,8 +880,9 @@ public class Davinci : MonoBehaviour
             (var md5Name, var uniqueHash) = BaseCacheManager.instance.UrlToCacheFile(url);
             BaseCacheManager.instance.LoadCache(uniqueHash, (byte[] data) =>
             {
-                texture = new Texture2D(2, 2);
-                texture.LoadImage(data); //..this will auto-resize the texture dimensions.
+                texture = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
+                //..this will auto-resize the texture dimensions.
+                LoadImageTimed(texture, data, url);
             });
             while (texture == null)
             {

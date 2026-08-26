@@ -19,6 +19,9 @@ public class WebFileSystemHelper : MonoBehaviour
         public bool success;
         public string message;
         public string error;
+        /// 二进制通道:数据不在 message 里,而是暂存在 JS 侧,靠 NXZ_TakeBinary 取。
+        public bool binary;
+        public int length;
     }
 #if UNITY_WEBGL
     [DllImport("__Internal")]
@@ -31,6 +34,15 @@ public class WebFileSystemHelper : MonoBehaviour
     private static extern void NXZ_ReadData(string fileName, int identifier, string gameObjectName, string callbackMethod);
 
     [DllImport("__Internal")]
+    private static extern void NXZ_WriteBinary(string fileName, byte[] value, int offset, int length, int identifier, string gameObjectName, string callbackMethod);
+
+    [DllImport("__Internal")]
+    private static extern void NXZ_ReadBinary(string fileName, int identifier, string gameObjectName, string callbackMethod);
+
+    [DllImport("__Internal")]
+    private static extern int NXZ_TakeBinary(int identifier, byte[] dest, int cap);
+
+    [DllImport("__Internal")]
     private static extern void NXZ_DeleteData(string fileName, int identifier, string gameObjectName, string callbackMethod);
 
     [DllImport("__Internal")]
@@ -40,6 +52,17 @@ public class WebFileSystemHelper : MonoBehaviour
     public static extern void NXZ_SyncFileSystem();
 
     public static void SyncFileSystem() { NXZ_SyncFileSystem(); }
+
+    /// 二进制通道:IndexedDB 与微信小游戏两个后端都已支持(jslib 里按平台分派),
+    /// 所以这里只按平台开关,不再区分后端。编辑器下没有 jslib,走原路径。
+    private static bool UseBinaryChannel
+    {
+#if UNITY_WEBGL && !UNITY_EDITOR
+        get { return true; }
+#else
+        get { return false; }
+#endif
+    }
 
     public static WebFileSystemHelper instance;
 
@@ -91,8 +114,17 @@ public class WebFileSystemHelper : MonoBehaviour
     public void WriteData(string fileName, byte[] value, Action<bool> action, int offset = 0, int lenght = -1)
     {
         int currentId = nextId++;
-        string base64String = Convert.ToBase64String(value, offset, lenght > 0 ? lenght : value.Length - offset);
-        AddToQueue(currentId, () => NXZ_WriteData(fileName, base64String, currentId, gameObject.name, "OnDataSaved"), action);
+        int len = lenght > 0 ? lenght : value.Length - offset;
+        if (UseBinaryChannel)
+        {
+            // 二进制直存:省掉 base64(+33%)和它前后的三次全量拷贝。
+            AddToQueue(currentId, () => NXZ_WriteBinary(fileName, value, offset, len, currentId, gameObject.name, "OnDataSaved"), action);
+        }
+        else
+        {
+            string base64String = Convert.ToBase64String(value, offset, len);
+            AddToQueue(currentId, () => NXZ_WriteData(fileName, base64String, currentId, gameObject.name, "OnDataSaved"), action);
+        }
         if(enableLog) {
             Debug.Log($"WebFileSystemHelper - WriteData(byte[]) {fileName} {currentId}");
         }
@@ -110,6 +142,16 @@ public class WebFileSystemHelper : MonoBehaviour
 
     public void ReadData(string fileName, Action<byte[]> action)
     {
+        if (UseBinaryChannel)
+        {
+            int binId = nextId++;
+            AddToQueue(binId, () => NXZ_ReadBinary(fileName, binId, gameObject.name, "OnDataLoaded"), action);
+            if (enableLog)
+            {
+                Debug.Log($"WebFileSystemHelper - ReadBinary {fileName} {binId}");
+            }
+            return;
+        }
         int currentId = nextId++;
         AddToQueue(currentId, () => NXZ_ReadData(fileName, currentId, gameObject.name, "OnDataLoaded"), action);
         if(enableLog) {
@@ -230,7 +272,19 @@ public class WebFileSystemHelper : MonoBehaviour
         if (callback is Action<byte[]> byteArrayCallback)
         {
             byte[] byteArray = null;
-            if(result.message != null) {
+            if (result.binary)
+            {
+                // 二进制通道:数据在 JS 侧暂存,这里一次 HEAPU8.set 取回来。
+                // 取不满就当没有 —— 宁可回落到重新下载,也不给上层半截数据。
+                if (result.success && result.length > 0)
+                {
+                    var buf = new byte[result.length];
+                    int got = NXZ_TakeBinary(result.id, buf, result.length);
+                    byteArray = got == result.length ? buf : null;
+                }
+            }
+            else if (result.message != null)
+            {
                 byteArray = Convert.FromBase64String(result.message);
             }
             byteArrayCallback.Invoke(byteArray);

@@ -89,20 +89,50 @@ public class Davinci : MonoBehaviour
 
     /// <summary>
     /// 用浏览器原生异步解码(createImageBitmap)代替同步的 Texture2D.LoadImage。
-    /// **默认关**:这条路要改到原生 GL 纹理句柄那一层,只能靠真机实测确认,
-    /// 没验证过之前不当默认。宿主按需打开(引擎侧挂在 ?asyncDecode=1 上)。
+    /// **默认开**(2026-08-26 真机验证通过:白块修掉后图片正常、卡顿明显下降)。
+    /// 任何一步失败(平台不支持 / 解码失败 / GL 上传失败)都回落到同步解码,
+    /// 所以开着的最坏情况等于关着。要排查可用 `?asyncDecode=0` 关掉。
     ///
     /// 它不让解码变快 —— 同样的像素同样的工作量,只是挪到 worker 线程,
     /// 主线程不再被冻住。真正省下来的是 asyncDecodeMaxEdge 的解码期降采样。
     /// </summary>
-    public static bool asyncDecode = false;
+    public static bool asyncDecode = true;
 
     /// <summary>
     /// 异步解码时把长边降到不超过这个值,0 = 不降。
     /// 降采样发生在**解码过程中**,所以超出部分的中间 RGBA 缓冲和 GPU 上传
-    /// 根本不会发生(8000×2000 那张:64MB → 按需)。
+    /// 根本不会发生(8000×2000 那张:64MB → 按需)。它砍掉的正是开了异步之后
+    /// 主线程上**剩下**的那部分:Texture2D 分配 + 纹理上传。
+    ///
+    /// 🔴 **默认 0(不降),别轻易设全局值。**
+    /// 解码尺寸同时是**布局尺寸**:MediaElement 的 -1 自动尺寸直接读
+    /// texture.width/height,spot 无显式宽高时走 ContentSizeFitter 由内容撑。
+    /// 全局降采样会让这些元素跟着缩小 —— 刚修好的两端尺寸对齐会当场再坏一次。
+    ///
+    /// 正确的做法是**按元素实际显示尺寸**决定解码目标(显示尺寸 × 最高输出倍数),
+    /// 那样既比全局 2048 更快、又完全不损画质;前提是先把"解码尺寸"和
+    /// "布局尺寸"解耦(解码后仍要能拿到素材原始宽高)。
     /// </summary>
     public static int asyncDecodeMaxEdge = 0;
+
+    /// <summary>
+    /// **本次加载**的解码长边上限,优先于全局的 asyncDecodeMaxEdge。
+    ///
+    /// 为什么要按次而不是全局:解码尺寸同时是布局尺寸(-1 自动尺寸读
+    /// texture.width/height,ContentSizeFitter 由内容撑)。只有**调用方**知道
+    /// 这次加载的元素尺寸是不是显式指定的 —— 是,降采样绝对安全;不是,
+    /// 一律别传。全局值做不到这个区分,设一次就全场受害。
+    /// </summary>
+    int maxDecodeEdge = 0;
+
+    public Davinci setMaxDecodeEdge(int px)
+    {
+        maxDecodeEdge = px > 0 ? px : 0;
+        return this;
+    }
+
+    /// 本次生效的上限:按次调用优先,没传才回落全局。
+    int EffectiveDecodeEdge => maxDecodeEdge > 0 ? maxDecodeEdge : asyncDecodeMaxEdge;
 
     private string MemKey()
     {
@@ -607,7 +637,7 @@ public class Davinci : MonoBehaviour
         if (data == null || data.Length == 0) { loadSpriteToImage(); return; }
         if (asyncDecode && WebGLImageDecoder.IsAvailable)
         {
-            WebGLImageDecoder.Decode(data, asyncDecodeMaxEdge, generateMipmaps, (tex) =>
+            WebGLImageDecoder.Decode(data, EffectiveDecodeEdge, generateMipmaps, (tex) =>
             {
                 // 回落必须是**真回落**:解码失败/上传失败一律走回同步路径,
                 // 而不是把 null 交给上层 —— 那样图片会永远停在占位状态。
@@ -916,7 +946,7 @@ public class Davinci : MonoBehaviour
                 if (asyncDecode && WebGLImageDecoder.IsAvailable && data != null && data.Length > 0)
                 {
                     // 下面的 while 本来就在等 texture 变非空,异步解码天然嵌得进去。
-                    WebGLImageDecoder.Decode(data, asyncDecodeMaxEdge, generateMipmaps, (tex) =>
+                    WebGLImageDecoder.Decode(data, EffectiveDecodeEdge, generateMipmaps, (tex) =>
                     {
                         if (tex == null)
                         {

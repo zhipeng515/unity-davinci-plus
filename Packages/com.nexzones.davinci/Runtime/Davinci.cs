@@ -87,6 +87,23 @@ public class Davinci : MonoBehaviour
     /// </summary>
     public static bool generateMipmaps = false;
 
+    /// <summary>
+    /// 用浏览器原生异步解码(createImageBitmap)代替同步的 Texture2D.LoadImage。
+    /// **默认关**:这条路要改到原生 GL 纹理句柄那一层,只能靠真机实测确认,
+    /// 没验证过之前不当默认。宿主按需打开(引擎侧挂在 ?asyncDecode=1 上)。
+    ///
+    /// 它不让解码变快 —— 同样的像素同样的工作量,只是挪到 worker 线程,
+    /// 主线程不再被冻住。真正省下来的是 asyncDecodeMaxEdge 的解码期降采样。
+    /// </summary>
+    public static bool asyncDecode = false;
+
+    /// <summary>
+    /// 异步解码时把长边降到不超过这个值,0 = 不降。
+    /// 降采样发生在**解码过程中**,所以超出部分的中间 RGBA 缓冲和 GPU 上传
+    /// 根本不会发生(8000×2000 那张:64MB → 按需)。
+    /// </summary>
+    public static int asyncDecodeMaxEdge = 0;
+
     private string MemKey()
     {
         // 纹理**形态**的差异都要进键 —— 同一个 url 解出两种纹理时,不进键就会
@@ -588,9 +605,25 @@ public class Davinci : MonoBehaviour
     private void loadSpriteToImageFromData(byte[] data)
     {
         if (data == null || data.Length == 0) { loadSpriteToImage(); return; }
-        var tex = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
-        LoadImageTimed(tex, data, url);
-        loadSpriteToImage(tex);
+        if (asyncDecode && WebGLImageDecoder.IsAvailable)
+        {
+            WebGLImageDecoder.Decode(data, asyncDecodeMaxEdge, generateMipmaps, (tex) =>
+            {
+                // 回落必须是**真回落**:解码失败/上传失败一律走回同步路径,
+                // 而不是把 null 交给上层 —— 那样图片会永远停在占位状态。
+                if (tex == null)
+                {
+                    var sync = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
+                    LoadImageTimed(sync, data, url);
+                    loadSpriteToImage(sync);
+                }
+                else loadSpriteToImage(tex);
+            });
+            return;
+        }
+        var t = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
+        LoadImageTimed(t, data, url);
+        loadSpriteToImage(t);
     }
 
     private void loadSpriteToImage(Texture2D texture = null)
@@ -880,6 +913,21 @@ public class Davinci : MonoBehaviour
             (var md5Name, var uniqueHash) = BaseCacheManager.instance.UrlToCacheFile(url);
             BaseCacheManager.instance.LoadCache(uniqueHash, (byte[] data) =>
             {
+                if (asyncDecode && WebGLImageDecoder.IsAvailable && data != null && data.Length > 0)
+                {
+                    // 下面的 while 本来就在等 texture 变非空,异步解码天然嵌得进去。
+                    WebGLImageDecoder.Decode(data, asyncDecodeMaxEdge, generateMipmaps, (tex) =>
+                    {
+                        if (tex == null)
+                        {
+                            var sync = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
+                            LoadImageTimed(sync, data, url);
+                            texture = sync;   // 回落到同步,不能把 null 留给上层
+                        }
+                        else texture = tex;
+                    });
+                    return;
+                }
                 texture = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
                 //..this will auto-resize the texture dimensions.
                 LoadImageTimed(texture, data, url);

@@ -92,11 +92,35 @@ var NXZImageDecode = {
       // 表现成"别的地方随机贴错图",而且极难查。
       var prev = GLctx.getParameter(GLctx.TEXTURE_BINDING_2D);
       GLctx.bindTexture(GLctx.TEXTURE_2D, tex);
-      GLctx.texImage2D(
-        GLctx.TEXTURE_2D, 0, GLctx.RGBA, GLctx.RGBA, GLctx.UNSIGNED_BYTE, bitmap
+
+      // 🔴 必须用 texSubImage2D,不能用 texImage2D。
+      // Unity 2021 的 WebGL2 后端用 texStorage2D 分配纹理 = **不可变存储**,
+      // 对它调 texImage2D 会产生 INVALID_OPERATION。而 GL 错误**不抛 JS 异常** ——
+      // try/catch 什么也抓不到,函数照样 return 1,上层拿到一张没被写过的纹理:
+      // 画面上就是**白色方块**(2026-08-26 用户实测)。
+      // 「不抛异常 ≠ 成功」,所以下面必须真去读 getError()。
+      while (GLctx.getError() !== GLctx.NO_ERROR) { /* 清掉别人留下的错误 */ }
+      GLctx.texSubImage2D(
+        GLctx.TEXTURE_2D, 0, 0, 0, GLctx.RGBA, GLctx.UNSIGNED_BYTE, bitmap
       );
-      if (genMips) GLctx.generateMipmap(GLctx.TEXTURE_2D);
+      var err = GLctx.getError();
+      if (err !== GLctx.NO_ERROR) {
+        // 纹理不是不可变存储时 texSubImage2D 也可能不合用(尺寸未分配),
+        // 退一步试 texImage2D;再不行就如实报失败,让上层回落到同步解码。
+        GLctx.texImage2D(
+          GLctx.TEXTURE_2D, 0, GLctx.RGBA, GLctx.RGBA, GLctx.UNSIGNED_BYTE, bitmap
+        );
+        err = GLctx.getError();
+      }
+      if (err === GLctx.NO_ERROR && genMips) {
+        GLctx.generateMipmap(GLctx.TEXTURE_2D);
+        GLctx.getError();
+      }
       GLctx.bindTexture(GLctx.TEXTURE_2D, prev);
+      if (err !== GLctx.NO_ERROR) {
+        console.warn('[NXZ] texture upload failed, glError=' + err);
+        return 0;
+      }
       return 1;
     } catch (e) {
       console.warn('[NXZ] texImage2D from ImageBitmap failed', e);

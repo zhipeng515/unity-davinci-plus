@@ -51,6 +51,8 @@ public class WebGLImageDecoder : MonoBehaviour
     static WebGLImageDecoder instance;
     readonly Dictionary<int, Action<Texture2D>> pending = new Dictionary<int, Action<Texture2D>>();
     readonly Dictionary<int, bool> pendingMips = new Dictionary<int, bool>();
+    // 起始时刻:异步路径也要能报耗时,否则开了开关没法和同步的 [DECODE] 对比。
+    readonly Dictionary<int, float> pendingStart = new Dictionary<int, float>();
     int nextId;
 
     static WebGLImageDecoder Instance()

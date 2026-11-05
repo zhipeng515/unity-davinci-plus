@@ -53,6 +53,28 @@ public class Davinci : MonoBehaviour
     private static Dictionary<string, Davinci> underProcessDavincies
         = new Dictionary<string, Davinci>();
 
+    /// <summary>
+    /// 本次下载是否已经 Invoke 过 onDownloadedAction。
+    ///
+    /// 🔴 为什么需要它(nexzones-issues#20):去重挂靠的判据原本只有
+    /// `underProcessDavincies.ContainsKey(hash)`,而主请求的时序是
+    ///
+    ///     downloadedData = raw;          // 字节就绪
+    ///     onDownloadedAction.Invoke();   // ← 通知所有挂靠者,**只此一次**
+    ///     loadSpriteToImage(texture);    // ← 同步解码,实测单张可达 1846ms
+    ///     downloadedData = null;
+    ///     underProcessDavincies.Remove(hash);   // ← 最后才移除
+    ///
+    /// Invoke 与 Remove 之间**隔着一次同步解码**。落在这个窗口里的后来者
+    /// 仍能 ContainsKey 命中,于是把自己挂到一个**已经 Invoke 完**的委托上 ——
+    /// 永远不会被触发,图就一直停在 SetActive(false),既不显示也不报错。
+    ///
+    /// 同事实测:同一段视频里多次调用 QTE、用同一张底图/进度图,
+    /// 「10%-20% 的概率显示失败,一张纯白一张纯黑」。并发请求同一个 url
+    /// 正是命中这条路的必要条件,所以"同一张图有时好有时坏"反而是典型症状。
+    /// </summary>
+    private bool downloadNotified;
+
     // ==== 解码后纹理的内存缓存(全站生效:media/spot/属性/道具图标都走本库) ====
     // 磁盘缓存命中仍要 异步读字节 + LoadImage 全量解码 + 两层协程各让一帧,
     // 每次打开面板图都晚几帧闪现。这里缓存解码完成的 Texture2D:命中即同帧贴图。
@@ -536,6 +558,14 @@ public class Davinci : MonoBehaviour
     {
         (uniqueHash, _) = BaseCacheManager.instance.UrlToCacheFile(url);
         if(BaseCacheManager.GlobalCached) {
+            // 🔴 只有**还没通知过**的主请求才值得挂靠。已经 Invoke 过的那条
+            // 不会再触发第二次,挂上去等于永远不回调(#20)。这时把陈旧条目清掉,
+            // 自己走正常下载路径 —— 字节此刻已在磁盘/内存缓存里,不会真的重下。
+            if (underProcessDavincies.TryGetValue(uniqueHash, out var stale)
+                && (stale == null || stale.downloadNotified))
+            {
+                underProcessDavincies.Remove(uniqueHash);
+            }
             if (underProcessDavincies.ContainsKey(uniqueHash))
             {
                 Davinci sameProcess = underProcessDavincies[uniqueHash];
@@ -567,7 +597,15 @@ public class Davinci : MonoBehaviour
             {
                 error("Error while downloading the image : " + www.error);
                 if(BaseCacheManager.GlobalCached) {
+                    // 🔴 同一个竞态的另一面(#20):主请求失败时原先**从不** Invoke,
+                    // 已经挂靠上来的后来者就永久挂死 —— 既不显示也不报错,
+                    // 连它们自己的 errorAction 都不会响。
+                    // 先立旗(不再接受新的挂靠),再把已挂靠的通知出去:它们的回调里
+                    // downloadedData 为空会回退到各自的加载/错误路径,如实失败。
+                    downloadNotified = true;
                     underProcessDavincies.Remove(uniqueHash);
+                    if (onDownloadedAction != null)
+                        onDownloadedAction.Invoke();
                 }
                 yield break;
             }
@@ -590,6 +628,9 @@ public class Davinci : MonoBehaviour
             downloadedData = raw;
         }
 
+        // 先立旗再通知:Invoke 期间(以及其后那段同步解码)若有同 url 请求进来,
+        // 它看到 downloadNotified=true 就不会挂到这个已触发完的委托上(#20)。
+        downloadNotified = true;
         if (onDownloadedAction != null)
             onDownloadedAction.Invoke();
 

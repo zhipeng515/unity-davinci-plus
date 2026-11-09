@@ -661,16 +661,29 @@ public class Davinci : MonoBehaviour
     // 2026-08-26 实测:一张 4,955,003 字节的 PNG 之后紧跟着一帧 1846ms 的停顿。
     // 这里把「多大、多久、解出来多少像素」直接打出来 —— 素材尺寸是创作者可控的,
     // 但只有先看得见,才谈得上治。
-    private static void LoadImageTimed(Texture2D tex, byte[] data, string url)
+    /// 把字节解进纹理。**返回解码成功没有** —— 调用方必须看它。
+    ///
+    /// 🔴 这个返回值原先被丢掉了(GitHub #20 的黑白方块根因,2026-11-09):
+    /// Texture2D.LoadImage 失败时(字节截断/格式不认)**不抛异常**,纹理就停在
+    /// 构造时那个 2×2 占位上 —— 而代码照旧往下走 Sprite.Create,于是一张 2×2
+    /// 的空白图被拉伸铺满控件,看起来就是一个纯白/纯黑方块,控制台一个字都没有。
+    /// 同事报的「调用 10 次中大概有一次显示失败,显示为纯白或者纯黑色方块」。
+    private static bool LoadImageTimed(Texture2D tex, byte[] data, string url)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        tex.LoadImage(data);
+        bool ok = tex.LoadImage(data);
         sw.Stop();
         if (sw.ElapsedMilliseconds > 30)
         {
             Debug.Log($"[DECODE] {(data == null ? 0 : data.Length)} 字节 → {tex.width}x{tex.height}"
                 + $" 用了 {sw.ElapsedMilliseconds}ms | {url}");
         }
+        if (!ok)
+        {
+            Debug.LogError(
+                $"[Davinci] 解码失败:{(data == null ? 0 : data.Length)} 字节认不出来 | {url}");
+        }
+        return ok;
     }
 
     private void loadSpriteToImageFromData(byte[] data)
@@ -685,7 +698,12 @@ public class Davinci : MonoBehaviour
                 if (tex == null)
                 {
                     var sync = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
-                    LoadImageTimed(sync, data, url);
+                    // 解码失败走**错误路径**,别把 2×2 的空白纹理交上去(见 LoadImageTimed)
+                    if (!LoadImageTimed(sync, data, url))
+                    {
+                        error($"decode failed ({(data == null ? 0 : data.Length)} bytes) : {url}");
+                        return;
+                    }
                     loadSpriteToImage(sync);
                 }
                 else loadSpriteToImage(tex);
@@ -693,7 +711,12 @@ public class Davinci : MonoBehaviour
             return;
         }
         var t = new Texture2D(2, 2, TextureFormat.RGBA32, generateMipmaps);
-        LoadImageTimed(t, data, url);
+        // 同上:解码失败不许往下走 —— 那会把 2×2 空白图拉满控件(黑白方块)
+        if (!LoadImageTimed(t, data, url))
+        {
+            error($"decode failed ({data.Length} bytes) : {url}");
+            return;
+        }
         loadSpriteToImage(t);
     }
 

@@ -620,6 +620,35 @@ public class Davinci : MonoBehaviour
             yield return null;
         }
 
+        // 🔴 **下载失败必须在这里处理**(GitHub #20,2026-11-09)。
+        //
+        // 上面那个 while 循环里本来有一段错误处理 —— 但
+        // `yield return www.SendWebRequest()` 返回时请求**已经完成**,isDone 立刻
+        // 为真,所以那个循环体(以及里面的错误分支)在正常时序下**根本不执行**,
+        // 是死代码。于是下载失败时:既没有 error()、onErrorAction 一声不响,
+        // 又继续往下走 DownloadHandlerTexture.GetContent —— 解不出来就是一张
+        // 2x2 空白纹理,被拉满整个控件。
+        //
+        // 同事报的「10 次里大概 1 次显示纯白/纯黑方块,而控制台一个字都没有」
+        // 就是这条路:方块是 GetContent 的 2x2,无声是因为错误处理在死代码里。
+        if (www.error != null)
+        {
+            error("Error while downloading the image : " + www.error);
+            // 挂靠上来的后来者也要通知,否则它们永久等一个不会再触发的回调
+            // (d4a8f6e 修的是同一个竞态的另一面,那段同样在死代码里)。
+            downloadNotified = true;
+            if (BaseCacheManager.GlobalCached)
+            {
+                underProcessDavincies.Remove(uniqueHash);
+            }
+            if (onDownloadedAction != null)
+                onDownloadedAction.Invoke();
+            www.Dispose();
+            www = null;
+            downloadedData = null;
+            yield break;
+        }
+
         if (www.error == null) {
             var raw = www.downloadHandler.data; // 取一次复用(每次访问可能拷贝)
             BaseCacheManager.instance.SaveCache(url, raw);
@@ -641,7 +670,27 @@ public class Davinci : MonoBehaviour
         {
             // preload 同样解码进内存缓存(下载 handler 已解码,直接复用)
             var texture = DownloadHandlerTexture.GetContent(www);
-            loadSpriteToImage(texture);
+
+            // 🔴 **HTTP 200 不等于拿到的是图**(GitHub #20)。CDN 的限流页、
+            // S3 的过期 XML、被截断的字节 —— 这些都是 200,而
+            // DownloadHandlerTexture 解不出来时返回的是一张 **2x2 空白纹理**,
+            // 贴上去就是同事看到的纯白/纯黑方块。
+            //
+            // 判据用「尺寸 <=2x2 而字节数又明显不止一张 2x2 图」:真的 2x2 PNG
+            // 只有几十字节,所以 >1KB 的响应解出 2x2 一定是失败。单看尺寸会把
+            // 合法的极小图误判,单看字节数判不出"是不是图"。
+            int bytes = downloadedData != null ? downloadedData.Length : 0;
+            bool looksBlank = texture == null
+                || (texture.width <= 2 && texture.height <= 2 && bytes > 1024);
+            if (looksBlank)
+            {
+                error($"downloaded {bytes} bytes but decoded to "
+                    + $"{(texture == null ? "null" : texture.width + "x" + texture.height)} : {url}");
+            }
+            else
+            {
+                loadSpriteToImage(texture);
+            }
         }
 
         www.Dispose();
